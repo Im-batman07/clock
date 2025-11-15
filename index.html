@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>World Clock — Fixed</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    .tabular-nums { font-variant-numeric: tabular-nums; }
+    .card { background: rgba(255,255,255,0.03); padding:1rem; border-radius:1rem; }
+    .btn { cursor:pointer; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-900 text-white p-4">
+  <main id="root" class="max-w-6xl mx-auto" aria-live="polite"></main>
+
+  <script>
+  // World Clock — Robust version with defensive DOM access
+  (function(){
+    'use strict';
+
+    /* ---------- Data and constants ---------- */
+    const THEMES = [
+      { name: 'Ocean Blue', colors: ['#0f172a','#1e3a8a','#0ea5e9'], textHex: '#ffffff', accent: '#06b6d4' },
+      { name: 'Sunset', colors: ['#7c2d12','#e11d48','#7c3aed'], textHex: '#ffffff', accent: '#fb923c' },
+      { name: 'Forest Green', colors: ['#064e3b','#059669','#10b981'], textHex: '#ffffff', accent: '#10b981' }
+    ];
+
+    const ALL_TIMEZONES = [
+      { continent: 'Asia', value: 'Asia/Kolkata', label: 'Mumbai/Delhi', country: 'India' },
+      { continent: 'Asia', value: 'Asia/Tokyo', label: 'Tokyo', country: 'Japan' },
+      { continent: 'Europe', value: 'Europe/London', label: 'London', country: 'United Kingdom' },
+      { continent: 'North America', value: 'America/New_York', label: 'New York', country: 'USA' },
+      { continent: 'North America', value: 'America/Los_Angeles', label: 'Los Angeles', country: 'USA' },
+      { continent: 'Africa', value: 'Africa/Cairo', label: 'Cairo', country: 'Egypt' },
+      { continent: 'Other', value: 'UTC', label: 'UTC', country: 'Universal' }
+    ];
+
+    const icons = {
+      download: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+      clock: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+      thermometer: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 14.76V3.5a2.5 2.5 0 1 0-5 0v11.26A4 4 0 1 0 12 20a4 4 0 0 0 2-5.24Z"/></svg>',
+      sun: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/></svg>',
+      moon: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 0 1 12.21 3 7 7 0 1 0 21 12.79z"/></svg>'
+    };
+
+    /* ---------- State ---------- */
+    let state = {
+      theme: THEMES[0],
+      useCustomTheme: false,
+      customTheme: { bg1: '#0f172a', bg2: '#1e3a8a', bg3: '#0ea5e9', text: '#ffffff' },
+      showSettings: false,
+      format24h: false,
+      showSeconds: true,
+      selectedTimezones: ['Asia/Kolkata','America/New_York','Europe/London'],
+      searchQuery: '',
+      selectedContinent: 'All',
+      temp: Math.floor(Math.random()*20)+15
+    };
+
+    /* ---------- Safe DOM helpers ---------- */
+    function $id(id){ return document.getElementById(id); }
+    function safeSetText(el, text){ if(!el) return; try{ el.textContent = text; }catch(e){ /* ignore */ } }
+    function safeSetHtml(el, html){ if(!el) return; try{ el.innerHTML = html; }catch(e){ /* ignore */ } }
+
+    function getLocalTimezone(){ return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
+
+    /* ---------- Render ---------- */
+    function render(){
+      const root = $id('root');
+      if(!root) return;
+
+      const theme = state.useCustomTheme ? state.customTheme : state.theme;
+      const background = `linear-gradient(135deg, ${theme.colors?theme.colors.join(','):theme.bg1})`;
+      document.body.style.background = background;
+
+      // Build HTML using templates but avoid inline event handlers (use delegation)
+      const continents = ['All', ...new Set(ALL_TIMEZONES.map(t=>t.continent))];
+
+      const timezoneCheckboxes = ALL_TIMEZONES
+        .filter(tz => (state.selectedContinent==='All' || tz.continent===state.selectedContinent) &&
+          (!state.searchQuery || tz.label.toLowerCase().includes(state.searchQuery.toLowerCase()) || tz.country.toLowerCase().includes(state.searchQuery.toLowerCase())))
+        .map(tz => {
+          const checked = state.selectedTimezones.includes(tz.value) ? 'checked' : '';
+          const disabled = !state.selectedTimezones.includes(tz.value) && state.selectedTimezones.length >= 3 ? 'disabled' : '';
+          return `<label class="flex items-center gap-2"><input data-action="toggle-tz" data-tz="${tz.value}" type="checkbox" ${checked} ${disabled} /> ${escapeHtml(tz.label)}, ${escapeHtml(tz.country)}</label>`;
+        }).join('');
+
+      const themeButtons = THEMES.map(t => `<button data-action="select-theme" data-theme="${escapeHtml(t.name)}" class="px-3 py-2 rounded btn" style="background:linear-gradient(135deg, ${t.colors.join(',')}); color:${t.textHex};">${escapeHtml(t.name)}</button>`).join('');
+
+      root.innerHTML = `
+        <div class="flex justify-between items-center mb-4">
+          <div class="flex items-center gap-2">
+            <button id="downloadButton" class="flex items-center gap-2 px-3 py-2 rounded bg-white/6 btn">${icons.download} <span class="hidden sm:inline">Download</span></button>
+            <button id="settingsButton" class="p-2 rounded-full bg-white/6 btn">${state.showSettings ? 'Close' : 'Settings'}</button>
+          </div>
+          <div class="text-sm opacity-80">Theme: ${escapeHtml(state.theme.name || 'Custom')}</div>
+        </div>
+
+        ${state.showSettings ? `
+          <section class="card mb-4">
+            <h3 class="text-lg font-semibold mb-3">Settings</h3>
+            <div class="mb-4">
+              <h4 class="font-semibold mb-2">Preset Themes</h4>
+              <div class="flex gap-2">${themeButtons}</div>
+            </div>
+            <div class="mb-4">
+              <h4 class="font-semibold mb-2">Display</h4>
+              <label class="flex items-center gap-2"><input id="format24" type="checkbox" ${state.format24h?'checked':''} /> 24-hour format</label>
+              <label class="flex items-center gap-2 mt-2"><input id="showSec" type="checkbox" ${state.showSeconds?'checked':''} /> Show seconds</label>
+            </div>
+
+            <div>
+              <h4 class="font-semibold mb-2">World Times (Select up to 3)</h4>
+              <div class="relative mb-2">
+                <input id="searchBox" class="w-full pl-2 pr-2 py-2 rounded bg-white/6" placeholder="Search city or country" value="${escapeHtml(state.searchQuery)}" />
+              </div>
+
+              <div class="flex gap-2 flex-wrap mb-2">
+                ${continents.map(c=>`<button data-action="set-continent" data-continent="${escapeHtml(c)}" class="px-2 py-1 rounded text-sm btn">${escapeHtml(c)}</button>`).join('')}
+              </div>
+
+              <div id="tzList" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+                ${timezoneCheckboxes}
+              </div>
+            </div>
+          </section>
+        ` : ''}
+
+        <section class="card p-6">
+          <div class="text-center mb-6">
+            <div class="flex items-center justify-center gap-2 mb-2">${icons.clock}<h2 class="text-xl font-semibold">Local Time</h2></div>
+            <div id="localTime" class="text-4xl font-bold tabular-nums" aria-atomic="true"></div>
+            <div id="localDate" class="opacity-90" aria-atomic="true"></div>
+          </div>
+
+          <div class="flex items-center justify-center gap-4 p-3 rounded-lg mb-5" style="background: rgba(255,255,255,0.02);">
+            ${icons.thermometer}
+            <div>
+              <div id="tempDisplay" class="text-2xl font-bold">${state.temp}\u00B0C / ${Math.round(state.temp*9/5+32)}\u00B0F</div>
+              <div class="text-sm opacity-80">Device Temperature (simulated)</div>
+            </div>
+          </div>
+
+          <div id="worldTimes" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+        </section>
+
+        <div id="dayNight" class="flex justify-center mt-4 opacity-80 text-sm gap-2"></div>
+      `;
+
+      attachListeners();
+      updateClock();
+      renderWorldTimes();
+    }
+
+    /* ---------- Render helpers ---------- */
+    function renderWorldTimes(){
+      const container = $id('worldTimes');
+      if(!container) return;
+      const now = new Date();
+      const nodes = state.selectedTimezones.map(tz => {
+        const info = ALL_TIMEZONES.find(x=>x.value===tz) || { label: tz, country: '' };
+        const time = formatTime(now, tz, state.format24h, state.showSeconds);
+        const dateStr = formatDate(now, tz).split(',')[0] || '';
+        return `
+          <div class="p-3 rounded-lg" style="background: rgba(255,255,255,0.02);">
+            <div class="font-semibold opacity-90">${escapeHtml(info.label)}</div>
+            <div class="text-2xl font-bold tabular-nums">${escapeHtml(time)}</div>
+            <div class="text-xs opacity-70">${escapeHtml(dateStr)}</div>
+          </div>
+        `;
+      }).join('');
+      safeSetHtml(container, nodes);
+    }
+
+    function updateClock(){
+      const now = new Date();
+      safeSetHtml($id('localTime'), formatTime(now, getLocalTimezone(), state.format24h, state.showSeconds));
+      safeSetText($id('localDate'), formatDate(now, getLocalTimezone()));
+      renderWorldTimes();
+      updateDayNight(now);
+    }
+
+    function updateDayNight(now){
+      const el = $id('dayNight');
+      if(!el) return;
+      const hour = now.getHours();
+      safeSetHtml(el, (hour>=6 && hour<18) ? `${icons.sun} Daytime` : `${icons.moon} Nighttime`);
+    }
+
+    /* ---------- Utilities ---------- */
+    function formatTime(date, timezone, show24h, showSec){
+      try{
+        const options = { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: !show24h };
+        if(showSec) options.second = '2-digit';
+        return date.toLocaleTimeString(undefined, options);
+      }catch(e){ return date.toLocaleTimeString(); }
+    }
+    function formatDate(date, timezone){
+      try{ const options = { timeZone: timezone, weekday:'long', year:'numeric', month:'long', day:'numeric' }; return date.toLocaleDateString(undefined, options); }catch(e){ return date.toLocaleDateString(); }
+    }
+
+    function escapeHtml(str){ if(str===undefined || str===null) return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
+
+    /* ---------- Event handling (delegation) ---------- */
+    function attachListeners(){
+      // Root-level delegation for buttons with data-action
+      const root = $id('root');
+      if(!root) return;
+
+      // Remove previous to avoid duplicate handlers
+      root.removeEventListener('click', root._clickHandler || (()=>{}));
+
+      const clickHandler = function(e){
+        const btn = e.target.closest && e.target.closest('[data-action]');
+        if(!btn) return;
+        const action = btn.getAttribute('data-action');
+        if(action==='select-theme'){
+          const name = btn.getAttribute('data-theme');
+          if(name) { state.theme = THEMES.find(t=>t.name===name) || THEMES[0]; state.useCustomTheme = false; render(); }
+        } else if(action==='toggle-tz'){
+          const tz = btn.getAttribute('data-tz');
+          if(!tz) return;
+          // this handler is attached to the label, but the actual input may be the event target
+          const input = e.target.tagName==='INPUT' ? e.target : btn.querySelector('input[type="checkbox"]');
+          if(!input) return;
+          if(input.checked){
+            if(state.selectedTimezones.length < 3 && !state.selectedTimezones.includes(tz)) state.selectedTimezones.push(tz);
+            else if(!state.selectedTimezones.includes(tz)) input.checked = false; // prevent over-select
+          } else {
+            if(state.selectedTimezones.length>1) state.selectedTimezones = state.selectedTimezones.filter(x=>x!==tz);
+            else input.checked = true; // prevent removing last
+          }
+          render();
+        } else if(action==='set-continent'){
+          const continent = btn.getAttribute('data-continent');
+          if(continent!==null) { state.selectedContinent = continent; render(); }
+        }
+      };
+
+      root.addEventListener('click', clickHandler);
+      root._clickHandler = clickHandler;
+
+      // local listeners for static controls
+      const dl = $id('downloadButton');
+      const sb = $id('settingsButton');
+      const formatCheckbox = $id('format24');
+      const showSecCheckbox = $id('showSec');
+      const searchBox = $id('searchBox');
+
+      if(dl){ dl.onclick = downloadAsDesktopApp; }
+      if(sb){ sb.onclick = ()=>{ state.showSettings = !state.showSettings; render(); }; }
+      if(formatCheckbox){ formatCheckbox.onchange = ()=>{ state.format24h = !!formatCheckbox.checked; render(); } }
+      if(showSecCheckbox){ showSecCheckbox.onchange = ()=>{ state.showSeconds = !!showSecCheckbox.checked; render(); } }
+      if(searchBox){ searchBox.oninput = ()=>{ state.searchQuery = searchBox.value || ''; render(); } }
+
+      // attach change handlers to tz inputs (in case delegation misses)
+      const tzList = $id('tzList');
+      if(tzList){ tzList.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+        cb.onchange = (e)=>{
+          const tz = cb.getAttribute('data-tz');
+          if(!tz) return;
+          if(cb.checked){ if(state.selectedTimezones.length<3 && !state.selectedTimezones.includes(tz)) state.selectedTimezones.push(tz); else cb.checked = false; }
+          else { if(state.selectedTimezones.length>1) state.selectedTimezones = state.selectedTimezones.filter(x=>x!==tz); else cb.checked = true; }
+          render();
+        };
+      }); }
+    }
+
+    /* ---------- Download standalone file ---------- */
+    function downloadAsDesktopApp(){
+      const theme = state.useCustomTheme ? state.customTheme : state.theme;
+      const colors = theme.colors ? theme.colors.join(',') : `${theme.bg1}`;
+      const html = `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>World Clock — Standalone</title>\n<style>body{margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(135deg, ${colors});color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh}</style>\n</head>\n<body>\n  <div style="text-align:center;max-width:90vw;">\n    <h1 id="time" style="font-size:48px;margin:0 0 8px"></h1>\n    <div id="date"></div>\n    <div id="tz" style="margin-top:6px;opacity:0.9"></div>\n  </div>\n  <script>\n  (function(){\n    function safeSet(el, val){ if(!el) return; try{ el.textContent = val; }catch(e){} }\n    function update(){ const d=new Date(); safeSet(document.getElementById('time'), d.toLocaleTimeString()); safeSet(document.getElementById('date'), d.toLocaleDateString()); try{ if(document.getElementById('tz')) document.getElementById('tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone; }catch(e){ if(document.getElementById('tz')) document.getElementById('tz').textContent='UTC'; } }\n    if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', function(){ update(); setInterval(update,1000); }); } else { update(); setInterval(update,1000); }\n  })();\n  <\/script>\n</body>\n</html>`;
+
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'world-clock.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }
+
+    /* ---------- Init / intervals ---------- */
+    // Render when DOM ready
+    function init(){ render(); // tickers
+      setInterval(()=>{ try{ updateClock(); }catch(e){ /* ignore */ } }, 1000);
+      setInterval(()=>{ state.temp = Math.floor(Math.random()*20)+15; try{ const t = $id('tempDisplay'); if(t) t.textContent = state.temp + '°C / ' + Math.round(state.temp*9/5+32) + '°F'; }catch(e){} }, 60000);
+    }
+
+    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+
+    // Expose small API for tests (if needed)
+    window.__WC__ = { state, render, updateClock };
+
+  })();
+  </script>
+</body>
+</html>
